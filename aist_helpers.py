@@ -61,3 +61,6 @@ def plot_bones(pose, ax=None, **kwargs):
         start = pose[keypoint_names.index(bone[0])]
         end = pose[keypoint_names.index(bone[1])]
         ax.plot([start[0], end[0]], [start[1], end[1]], [start[2], end[2]], **kwargs)
+        # Only label one bone
+        if 'label' in kwargs:
+            del kwargs['label']

@@ -44,7 +44,8 @@ def iterate_frechet_mean(manifold: Manifold, points: Iterable[Point]) -> Point:
 
 def optimize_frechet_mean(manifold: Manifold,
                           points: Iterable[Point],
-                          init_method: str = "random point") -> Point:
+                          init_method: str = "random point",
+                          **kwargs) -> Point:
     """The Frechet Mean is the generalization of 'mean' to data on a manifold. Here,
     the manifold is a sphere. In other words, we're computing the point on the sphere
     that minimizes the sum of squared distances to all rows of X.
@@ -65,7 +66,7 @@ def optimize_frechet_mean(manifold: Manifold,
     def sum_squared_distance(m):
         return sum([manifold.distance(m, p) ** 2 for p in points])
 
-    frechet_mean, converged = minimize(manifold, sum_squared_distance, init, max_iter=1000)
+    frechet_mean, converged = minimize(manifold, sum_squared_distance, init, **kwargs)
 
     if not converged:
         warnings.warn("minimize() failed to converge!")

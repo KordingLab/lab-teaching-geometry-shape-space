@@ -98,17 +98,64 @@ class ShapeSpace(PreShapeSpace):
     This means that exp_map and log_map are not exact inverses up to _equality_. However, they are inverses up to
     _equivalence_.
     """
+    def __init__(self, *args, **kwargs):
+        super(ShapeSpace, self).__init__(*args, **kwargs)
+        self.dim = self.dim - (self.p * (self.p - 1)) // 2
+
+    @staticmethod
+    def orthogocnal_procrustes_rotation(x, y, anchor="middle"):
+        """Provided x and y, each matrix of size (m, p) that are already centered and
+        scaled, solve the orthogonal procrustest problem (rotate x and y into a common
+        frame that minimizes distances).
+
+        If anchor="middle" (default) then both are both rotated to meet in the middle
+        If anchor="x", then x is left unchanged and y is rotated towards it
+        If anchor="y", then y is left unchanged and x is rotated towards it
+
+        See https://en.wikipedia.org/wiki/Orthogonal_Procrustes_problem
+
+        :return: r_x and r_y, which, when right-multiplied with x and y, gives the
+        aligned coordinates, or None for each if no transform is required
+        """
+        with torch.no_grad():
+            u, _, v = torch.linalg.svd(x.T @ y)
+        # Helpful trick to see how these are related: u is the inverse of u.T,
+        # and likewise v is inverse of v.T. We get to the anchor=x and anchor=y
+        # solutions by right-multiplying both return values by u.T or
+        # right-multiplying both return values by v, respectively (if both return
+        # values are rotated in the same way, it preserves the shape).
+        if anchor == "middle":
+            return u, v.T
+        elif anchor == "x":
+            return None, v.T @ u.T
+        elif anchor == "y":
+            return u @ v, None
+        else:
+            raise ValueError(f"Invalid 'anchor' argument: {anchor}: "
+                             f"(must be 'middle', 'x', or 'y')")
+
+    @staticmethod
+    def align(x, y, anchor="middle"):
+        """Provided x and y, each matrix of size (m, p) that are already centered and
+        scaled, solve the orthogonal procrustes problem (rotate x and y into a common
+        frame that minimizes distances).
+
+        :return: new_a, new_b the rotated versions of x and y, minimizing element-wise
+        squared differences
+        """
+        r_x, r_y = ShapeSpace.orthogocnal_procrustes_rotation(x, y, anchor)
+        return x @ r_x if r_x is not None else x, y @ r_y if r_y is not None else y
 
     def _distance_impl(self, pt_x: Point, pt_y: Point) -> Scalar:
         # Distance in shape space = distance in pre shape space after aligning points
         # to each other
-        pt_x, pt_y = _orthogonal_procrustes(pt_x, pt_y)
+        pt_x, pt_y = self.align(pt_x, pt_y)
         return super(ShapeSpace, self)._distance_impl(pt_x, pt_y)
 
     def geodesic(self, pt_x: Point, pt_y: Point, t: float) -> Point:
         # Choice of anchor here is largely arbitrary, but for local consistency with
         # log_map we set it to 'x'
-        pt_x, pt_y = _orthogonal_procrustes(pt_x, pt_y, anchor="x")
+        pt_x, pt_y = self.align(pt_x, pt_y, anchor="x")
         return super(ShapeSpace, self).geodesic(pt_x, pt_y, t)
 
     def _horizontal_tangent(self, pt_x: Point, vec_w: Vector, *, vert_part: Vector = None) -> Vector:
@@ -179,7 +226,7 @@ class ShapeSpace(PreShapeSpace):
         # but they are in the ShapeSpace. In other words, if c=exp_map(x,log_map(x,
         # y)), then we'll have length(y,c)=0 but not y==c Method: align y to x and
         # get x-->y' horizontal part from the PreShapeSpace's log_map
-        _, new_b = _orthogonal_procrustes(pt_x, pt_y, anchor="x")
+        _, new_b = ShapeSpace.align(pt_x, pt_y, anchor="x")
         return super(ShapeSpace, self).log_map(pt_x, new_b)
 
     def levi_civita(self, pt_x: Point, pt_y: Point, vec_w: Vector) -> Vector:
@@ -187,58 +234,9 @@ class ShapeSpace(PreShapeSpace):
         # after rotation (Lemma 1b of Nava-Yazdani et al (2020)). This means we can
         # start by aligning x to y as follows to take care of the vertical part,
         # then all that's left is to transport the horizontal part:
-        r_a, _ = _orthogonal_procrustes_rotation(pt_x, pt_y, anchor="y")
-        new_pt_x, new_vec_w = pt_x @ r_a, vec_w @ r_a
+        r_x, _ = ShapeSpace.orthogocnal_procrustes_rotation(pt_x, pt_y, anchor="y")
+        new_pt_x, new_vec_w = pt_x @ r_x, vec_w @ r_x
         return super(ShapeSpace, self).levi_civita(new_pt_x, pt_y, new_vec_w)
-
-
-def _orthogonal_procrustes_rotation(x, y, anchor="middle"):
-    """Provided x and y, each matrix of size (m, p) that are already centered and
-    scaled, solve the orthogonal procrustest problem (rotate x and y into a common
-    frame that minimizes distances).
-
-    If anchor="middle" (default) then both x and y
-    If anchor="x", then x is left unchanged and y is rotated towards it
-    If anchor="y", then y is left unchanged and x is rotated towards it
-
-    See https://en.wikipedia.org/wiki/Orthogonal_Procrustes_problem
-
-    :return: r_a and r_b, which, when right-multiplied with x and y, gives the
-    aligned coordinates, or None for each if no transform is required
-    """
-    with torch.no_grad():
-        u, _, v = torch.linalg.svd(x.T @ y)
-    # Helpful trick to see how these are related: u is the inverse of u.T,
-    # and likewise v is inverse of v.T. We get to the anchor=x and anchor=y solutions
-    # by right-multiplying both return values by u.T or right-multiplying both return
-    # values by v, respectively (if both return values are rotated in the same way,
-    # it preserves the shape).
-    if anchor == "middle":
-        return u, v.T
-    elif anchor == "x":
-        return None, v.T @ u.T
-    elif anchor == "y":
-        return u @ v, None
-    else:
-        raise ValueError(f"Invalid 'anchor' argument: {anchor} (must be 'middle', 'x', or 'y')")
-
-
-def _orthogonal_procrustes(x, y, anchor="middle"):
-    """Provided x and y, each matrix of size (m, p) that are already centered and
-    scaled, solve the orthogonal procrustest problem (rotate x and y into a common
-    frame that minimizes distances).
-
-    If anchor="middle" (default) then both x and y
-    If anchor="x", then x is left unchanged and y is rotated towards it
-    If anchor="y", then y is left unchanged and x is rotated towards it
-
-    See https://en.wikipedia.org/wiki/Orthogonal_Procrustes_problem
-
-    :return: new_a, new_b the rotated versions of x and y, minimizing element-wise
-    squared differences
-    """
-    r_a, r_b = _orthogonal_procrustes_rotation(x, y, anchor)
-    return x @ r_a if r_a is not None else x, y @ r_b if r_b is not None else y
 
 
 def _solve_sylvester(x, y, q):

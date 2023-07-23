@@ -1,6 +1,6 @@
 import torch
 from manifold import Manifold
-from stats import optimize_frechet_mean
+from stats import optimize_frechet_mean, iterate_frechet_mean
 from sklearn.base import BaseEstimator
 import warnings
 
@@ -11,9 +11,9 @@ class ManifoldPCA(BaseEstimator):
 
     Note: backend is torch rather than numpy.
     """
-    def __init__(self, space: Manifold, *, n_components=2):
+    def __init__(self, manifold: Manifold, *, n_components=2):
         super(ManifoldPCA, self).__init__()
-        self.space = space
+        self.manifold = manifold
         self.n_components = n_components
 
     def fit(self, X, y=None, init=None):
@@ -30,21 +30,22 @@ class ManifoldPCA(BaseEstimator):
         :param init: unused
         :return: n by n_components matrix of coordinates
         """
-        X = torch.tensor(self._validate_data(X))
-        points = [self.space.project(x) for x in X]
+        X = torch.tensor(X)
+        points = [self.manifold.project(x) for x in X]
 
         if y is not None or init is not None:
             warnings.warn("ManifoldPCA does not use 'y' nor 'init' arguments")
 
         # Estimate the Frechet mean, using the iterative mean method for initialization
-        self.frechet_mean_ = optimize_frechet_mean(self.space, points, init_method="iterative")
+        # self.frechet_mean_ = optimize_frechet_mean(self.manifold, points, init_method="iterative", max_iter=100)
+        self.frechet_mean_ = iterate_frechet_mean(self.manifold, points)
 
         # Get the coordinates of every point in the tangent space of the mean
-        tangent_vectors = torch.stack([self.space.log_map(self.frechet_mean_, pt) for pt in points], dim=0)
+        tangent_vectors = torch.stack([self.manifold.log_map(self.frechet_mean_, pt).flatten() for pt in points], dim=0)
 
         # Now we do PCA in the linear-looking tangent space
         _, s, vT = torch.linalg.svd(tangent_vectors)
-        self.singular_values_ = s
+        self.singular_values_ = s[:self.n_components]
         self.components_ = vT[:self.n_components, :].T
         self.scales_ = torch.sqrt(s[:self.n_components])
 
@@ -54,16 +55,16 @@ class ManifoldPCA(BaseEstimator):
         if y is not None:
             warnings.warn("ManifoldPCA does not use 'y' argument")
 
-        X = torch.tensor(self._validate_data(X))
-        points = [self.space.project(x) for x in X]
-        tangent_vectors = torch.stack([self.space.log_map(self.frechet_mean_, pt) for pt in points], dim=0)
+        X = torch.tensor(X)
+        points = [self.manifold.project(x) for x in X]
+        tangent_vectors = torch.stack([self.manifold.log_map(self.frechet_mean_, pt).flatten() for pt in points], dim=0)
         return self._transform(tangent_vectors)
 
     def inverse_transform(self, coordinates):
         """Coordinates back to points on the manifold
         """
         tangent_vectors = coordinates @ self.components_.T
-        return torch.stack([self.space.exp_map(self.frechet_mean_, vec) for vec in tangent_vectors], dim=0)
+        return torch.stack([self.manifold.exp_map(self.frechet_mean_, vec.reshape(self.manifold.shape)) for vec in tangent_vectors], dim=0)
 
     def _transform(self, tangent_vectors):
         """Project tangent vectors into top PCs
